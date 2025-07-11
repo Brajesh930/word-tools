@@ -1,0 +1,912 @@
+Sub claimElementMapping()
+Dim subjectPatentNo As String, referencePatentNo As String, subjectPatentData As String, referencePatentData As String, claimElement As String
+Dim LastSubjectPatentNo As String
+Dim LastReferencePatentNo As String
+
+subjectPatentNo = InputBox("Enter the Subject Patent No (e.g., US7619647B2):", _
+        "Fetch Google Patent Data", GetDocVar("LastSubjectPatentNo"))
+    If subjectPatentNo = "" Then Exit Sub
+
+    referencePatentNo = InputBox("Enter the Reference Patent No (e.g., US7619647B2):", _
+        "Fetch Google Patent Data", GetDocVar("LastReferencePatentNo"))
+    If referencePatentNo = "" Then Exit Sub
+
+    ' Save back to doc variables
+    SetDocVar "LastSubjectPatentNo", subjectPatentNo
+    SetDocVar "LastReferencePatentNo", referencePatentNo
+    
+subjectPatentData = FetchAndInsertGooglePatentData(subjectPatentNo)
+referencePatentData = FetchAndInsertGooglePatentData(referencePatentNo)
+claimElement = Selection.text
+Debug.Print "data fached"
+Dim claimContext As String
+claimContext = GenerateClaimContext(claimElement, subjectPatentData)
+MsgBox "claimContext successfully." & claimContext, vbInformation
+Dim analysisResult As String
+analysisResult = AnalyzePatentRelationship(claimElement, claimContext, referencePatentData)
+
+If Selection.Information(wdWithInTable) Then
+    Selection.MoveRight Unit:=wdCell, Count:=1
+    Selection.TypeText (analysisResult)
+    'InsertResponseWithBoldInSameCell analysisResult
+    'InsertAndBoldAIMarkedText analysisResult
+    BoldTextBetweenAsterisks
+    Else
+    Selection.text = analysisResult
+End If
+'Application.Cursor = wdCursorNormal
+    Application.StatusBar = False
+    Application.ScreenUpdating = True ' in case you use it
+    MsgBox "Patent mapping successfully.", vbInformation
+End Sub
+' Set document variable
+Sub SetDocVar(varName As String, varValue As String)
+    On Error Resume Next
+    ActiveDocument.Variables(varName).value = varValue
+    On Error GoTo 0
+End Sub
+
+' Get document variable (returns empty string if not set)
+Function GetDocVar(varName As String) As String
+    On Error Resume Next
+    GetDocVar = ActiveDocument.Variables(varName).value
+    On Error GoTo 0
+End Function
+Function FetchAndInsertGooglePatentData(patentNo As String)
+    Dim url As String, htmlText As String
+    Dim http As Object
+    Dim title As String, abstract As String, claims As String, description As String
+'
+    url = "https://patents.google.com/xhr/result?id=patent%2F" & patentNo & "%2Fen"
+    Set http = CreateObject("MSXML2.XMLHTTP.6.0")
+    http.Open "GET", url, False
+    http.send
+
+    If http.Status <> 200 Then
+        MsgBox "Failed to fetch data from Google Patents.", vbCritical
+        Exit Function
+    End If
+
+    htmlText = http.responseText
+
+    ' --- Custom parsing for each section ---
+    title = CleanHTML(ExtractBetween(htmlText, "<span itemprop=""title"">", "</span>"))
+    abstract = CleanHTML(ExtractBetween(htmlText, "<section itemprop=""abstract"" itemscope>", "</section>"))
+    claims = ExtractAndFormatClaimsPara(htmlText)
+    description = ExtractDescriptionWithParaNumbers(ExtractBetween(htmlText, "<section itemprop=""description"" itemscope>", "</section>"))
+
+   FetchAndInsertGooglePatentData = title + abstract + claims + description
+   'Debug.Print FetchAndInsertGooglePatentData
+   MsgBox "Patent data extracted and inserted successfully.", vbInformation
+End Function
+
+Function ExtractBetween(text As String, startTag As String, endTag As String) As String
+    Dim startPos As Long, endPos As Long
+    startPos = InStr(text, startTag)
+    If startPos = 0 Then ExtractBetween = "": Exit Function
+    startPos = startPos + Len(startTag)
+    endPos = InStr(startPos, text, endTag)
+    If endPos = 0 Then ExtractBetween = "": Exit Function
+    ExtractBetween = Mid(text, startPos, endPos - startPos)
+End Function
+
+Function CleanHTML(rawHtml As String) As String
+    Dim temp As String
+    temp = rawHtml
+
+    ' Remove <script> blocks
+    Do While InStr(temp, "<script") > 0
+        Dim s As Long, e As Long
+        s = InStr(temp, "<script")
+        e = InStr(s, temp, "</script>")
+        If s > 0 And e > 0 Then
+            temp = Left(temp, s - 1) & Mid(temp, e + 9)
+        Else
+            Exit Do
+        End If
+    Loop
+
+    ' Remove all tags
+    Dim tagOpen As Long, tagClose As Long
+    Do
+        tagOpen = InStr(temp, "<")
+        If tagOpen = 0 Then Exit Do
+        tagClose = InStr(tagOpen, temp, ">")
+        If tagClose = 0 Then Exit Do
+        temp = Left(temp, tagOpen - 1) & Mid(temp, tagClose + 1)
+    Loop
+
+    ' HTML entities
+    temp = Replace(temp, "&nbsp;", " ")
+    temp = Replace(temp, "&amp;", "&")
+    temp = Replace(temp, "&quot;", """")
+    temp = Replace(temp, "&lt;", "<")
+    temp = Replace(temp, "&gt;", ">")
+    temp = Replace(temp, "<br>", vbCrLf)
+    temp = Replace(temp, "<br/>", vbCrLf)
+    temp = Replace(temp, "<br />", vbCrLf)
+
+    temp = Replace(temp, vbTab, " ")
+    Do While InStr(temp, "  ") > 0
+        temp = Replace(temp, "  ", " ")
+    Loop
+    temp = Trim(temp)
+    CleanHTML = temp
+End Function
+
+' Clean description and ensure each para number is at the start of a new paragraph
+Function ExtractDescriptionWithParaNumbers(rawHtml As String) As String
+    Dim temp As String
+    temp = rawHtml
+
+    temp = Replace(temp, "<p>", vbCrLf)
+    temp = Replace(temp, "</p>", vbCrLf)
+    temp = Replace(temp, "<br>", vbCrLf)
+    temp = Replace(temp, "<br/>", vbCrLf)
+    temp = Replace(temp, "<br />", vbCrLf)
+
+    ' Remove remaining HTML tags
+    Dim tagOpen As Long, tagClose As Long
+    Do
+        tagOpen = InStr(temp, "<")
+        If tagOpen = 0 Then Exit Do
+        tagClose = InStr(tagOpen, temp, ">")
+        If tagClose = 0 Then Exit Do
+        temp = Left(temp, tagOpen - 1) & Mid(temp, tagClose + 1)
+    Loop
+
+    ' Entities
+    temp = Replace(temp, "&nbsp;", " ")
+    temp = Replace(temp, "&amp;", "&")
+    temp = Replace(temp, "&quot;", """")
+    temp = Replace(temp, "&lt;", "<")
+    temp = Replace(temp, "&gt;", ">")
+
+    temp = Replace(temp, vbTab, " ")
+    temp = Replace(temp, vbCr, "")
+    temp = Replace(temp, vbLf, vbCrLf)
+    temp = Replace(temp, vbCrLf & vbCrLf, vbCrLf)
+
+    ' Ensure each para number [nnnn] is at the start of a new line
+    Dim i As Long
+    For i = 9999 To 0 Step -1
+        temp = Replace(temp, "[" & Format(i, "0000") & "]", vbCrLf & "[" & Format(i, "0000") & "]")
+    Next
+
+    ' Remove blank lines
+    Dim lines() As String
+    Dim result As String
+    lines = Split(temp, vbCrLf)
+    For i = 0 To UBound(lines)
+        If Trim(lines(i)) <> "" Then
+            result = result & Trim(lines(i)) & vbCrLf
+        End If
+    Next
+
+    ExtractDescriptionWithParaNumbers = Trim(result)
+End Function
+
+' Claims: Each claim on its own line; for dependent claims, keep para numbers if present
+Function ExtractAndFormatClaimsPara(htmlText As String) As String
+    Dim claimsSection As String
+    claimsSection = ExtractBetween(htmlText, "<section itemprop=""claims"" itemscope>", "</section>")
+    If claimsSection = "" Then ExtractAndFormatClaimsPara = "Claims not found": Exit Function
+
+    ' Each claim is within <claim ...>...</claim>
+    Dim output As String, currPos As Long, claimNum As Long
+    currPos = 1: claimNum = 1: output = ""
+    Do
+        Dim s As Long, e As Long, claimText As String
+        s = InStr(currPos, claimsSection, "<claim ")
+        If s = 0 Then Exit Do
+        s = InStr(s, claimsSection, ">") + 1
+        e = InStr(s, claimsSection, "</claim>")
+        If e = 0 Then Exit Do
+        claimText = Mid(claimsSection, s, e - s)
+        claimText = CleanHTML(claimText)
+        claimText = SplitClaimParas(claimText, claimNum)
+        output = output & claimText & vbCrLf
+        currPos = e + 8
+        claimNum = claimNum + 1
+    Loop
+    If output = "" Then output = CleanHTML(claimsSection)
+    ExtractAndFormatClaimsPara = output
+End Function
+
+' Splits a claim into numbered paragraphs (if any) and keeps para numbers at the start
+Function SplitClaimParas(claimText As String, claimNum As Long) As String
+    Dim outText As String, lines() As String, i As Integer
+    lines = Split(claimText, vbCrLf)
+    For i = 0 To UBound(lines)
+        If Trim(lines(i)) <> "" Then
+            ' Try to detect para numbers in claim (e.g., [0002])
+            Dim paraNum As String
+            paraNum = ""
+            If Left(Trim(lines(i)), 6) Like "[####]" Then
+                paraNum = Left(Trim(lines(i)), 6)
+            End If
+            If paraNum = "" And i = 0 Then
+                outText = outText & "Claim " & claimNum & ": " & lines(i) & vbCrLf
+            Else
+                outText = outText & lines(i) & vbCrLf
+            End If
+        End If
+    Next
+    SplitClaimParas = Trim(outText)
+End Function
+Function GenerateClaimContext(claimElement As String, subjectPatentData As String) As String
+    On Error GoTo ErrorHandler
+
+    Dim prompt As String
+    prompt = BuildContextPrompt(claimElement, subjectPatentData)
+
+    Dim response As String
+    response = CallGoogleAI(prompt)
+
+    If Len(response) = 0 Then
+        MsgBox "Failed to generate claim context using Google AI." & vbCrLf & vbCrLf & _
+               "This could be due to:" & vbCrLf & _
+               "• Invalid Google AI API key" & vbCrLf & _
+               "• API quota exceeded" & vbCrLf & _
+               "• Network connectivity issues" & vbCrLf & _
+               "• Content filtering by AI safety systems" & vbCrLf & vbCrLf & _
+               "Please check your API key and try again.", _
+               vbCritical, "Google AI Context Generation Error"
+    End If
+
+    GenerateClaimContext = response
+    Exit Function
+
+ErrorHandler:
+    MsgBox "Error in claim context generation: " & Err.description, vbCritical, "Context Generation Error"
+    GenerateClaimContext = ""
+End Function
+
+' ===================================================================
+' ANALYZE PATENT RELATIONSHIP USING GOOGLE AI
+' ===================================================================
+Function AnalyzePatentRelationship(claimElement As String, claimContext As String, referencePatentData As String) As String
+    On Error GoTo ErrorHandler
+
+    ' Check if data is too large and use chunking if needed
+    Dim totalPromptLength As Long
+    totalPromptLength = Len(claimElement) + Len(claimContext) + Len(referencePatentData) + 2000 ' +2000 for prompt text
+
+    Debug.Print "Total prompt length: " & totalPromptLength
+
+    ' Google AI Gemini has ~1M token limit (~4M characters), but we'll be conservative
+    ' Use chunking if total data exceeds 500,000 characters to ensure quality
+    If totalPromptLength > 500000 Then
+        Debug.Print "Large data detected, using chunking method"
+        AnalyzePatentRelationship = AnalyzePatentRelationshipWithChunking(claimElement, claimContext, referencePatentData)
+    Else
+        Debug.Print "Standard analysis method"
+        Dim prompt As String
+        prompt = BuildAnalysisPrompt(claimElement, claimContext, referencePatentData)
+
+        Dim response As String
+        response = CallGoogleAI(prompt)
+
+        If Len(response) = 0 Then
+            MsgBox "Failed to analyze patent relationship using Google AI." & vbCrLf & vbCrLf & _
+                   "This could be due to:" & vbCrLf & _
+                   "• Invalid Google AI API key" & vbCrLf & _
+                   "• API quota exceeded" & vbCrLf & _
+                   "• Network connectivity issues" & vbCrLf & _
+                   "• Content filtering by AI safety systems" & vbCrLf & vbCrLf & _
+                   "Please check your API key and try again.", _
+                   vbCritical, "Google AI Analysis Error"
+        End If
+
+        AnalyzePatentRelationship = response
+    End If
+
+    Exit Function
+
+ErrorHandler:
+    AnalyzePatentRelationship = ""
+End Function
+
+' ===================================================================
+' BUILD CONTEXT GENERATION PROMPT
+' ===================================================================
+Function BuildContextPrompt(claimElement As String, subjectPatentData As String) As String
+    Dim prompt As String
+    
+    prompt = "You are a patent analysis expert. Based on the following patent data, "
+    prompt = prompt & "provide a concise context for the specific claim element."
+    prompt = prompt & vbCrLf & vbCrLf
+    
+    prompt = prompt & "CLAIM ELEMENT TO ANALYZE:" & vbCrLf
+    prompt = prompt & claimElement & vbCrLf & vbCrLf
+    
+    prompt = prompt & "SUBJECT PATENT DATA:" & vbCrLf
+    prompt = prompt & subjectPatentData & vbCrLf & vbCrLf
+    
+    prompt = prompt & "Please provide a context that explains:" & vbCrLf
+    prompt = prompt & "1. What this claim element represents in the invention" & vbCrLf
+    prompt = prompt & "2. Its technical significance" & vbCrLf
+    prompt = prompt & "3. How it relates to the overall patent" & vbCrLf & vbCrLf
+    
+    prompt = prompt & "Keep the response to focus on technical understanding."
+    
+    BuildContextPrompt = prompt
+End Function
+Function BuildAnalysisPrompt(claimElement As String, claimContext As String, referencePatentData As String) As String
+    Dim prompt As String
+
+    prompt = "You are a sr patent analysis expert preparing a claim chart for invalidation contention"
+    prompt = prompt & "Analyze how the reference patent relates to the specific claim element and provide your response in the EXACT format specified below."
+    prompt = prompt & vbCrLf & vbCrLf
+
+    
+    prompt = prompt & "The CLAIM ELEMENT is a limitation according to the patent the analysis should be only based on this element and limitations in this element" & vbCrLf
+    prompt = prompt & "CLAIM ELEMENT:" & vbCrLf
+    prompt = prompt & claimElement & vbCrLf & vbCrLf
+
+    
+    prompt = prompt & "CLAIM ELEMENT CONTEXT is not a limitation for the analysis, it should be only used for understanding the claim element not a actual limitation" & vbCrLf
+    prompt = prompt & "CLAIM ELEMENT CONTEXT:" & vbCrLf
+    prompt = prompt & claimContext & vbCrLf & vbCrLf
+
+    prompt = prompt & "REFERENCE PATENT DATA:" & vbCrLf
+    prompt = prompt & referencePatentData & vbCrLf & vbCrLf
+    'Debug.Print referencePatentData
+
+    prompt = prompt & "REQUIRED OUTPUT FORMAT (follow exactly):" & vbCrLf & vbCrLf
+
+    prompt = prompt & "First Line: Write either '**Disclosed Completely**' OR '**Disclosed Partially**' based on:" & vbCrLf
+    prompt = prompt & "- '**Disclosed completely**' = claim element is present (directly, inherently, or indirectly, or obvious for given technology, or can have Broad interpretation)" & vbCrLf
+    prompt = prompt & "- '**Disclosed partially**' = some elements are absent in the reference" & vbCrLf & vbCrLf
+
+    prompt = prompt & "Second Paragraph: Start with '**Comment:-**' followed by:" & vbCrLf
+    prompt = prompt & "- Precise reasoning how the element is disclosed in the relevant text and/or how it can be obvious for given technology starting with 'The reference discloses'" & vbCrLf
+    prompt = prompt & "- Not add any * in this paragraph such as (mention a *second* connection ) and only in starting of the paragraph use exact text '**Comment:-**' " & vbCrLf
+    prompt = prompt & "- If something is missing, add '... however the reference fails to disclose [missing aspects]'" & vbCrLf & vbCrLf
+    
+
+    prompt = prompt & "Third Section: Provide ONLY exact text from the reference patent (NO paraphrasing, NO interpretation):" & vbCrLf
+    prompt = prompt & "- COPY EXACT PARAGRAPHS word-for-word from the reference patent text provided above" & vbCrLf
+    prompt = prompt & "- DO NOT write your own text or interpretations" & vbCrLf
+    prompt = prompt & "- DO NOT paraphrase or modify the patent text" & vbCrLf
+    prompt = prompt & "- CRITICAL: In each copied paragraph, use **bold text** around phrases directly related to the claim element" & vbCrLf
+    prompt = prompt & "- Bold ENTIRE SENTENCES or LONG PHRASES from the original patent text" & vbCrLf
+    prompt = prompt & "- After EACH paragraph, add indexing with ~ symbol: '~Abstract', '~Claim X', '~Description'" & vbCrLf
+    prompt = prompt & "- Provide 4-5 exact paragraphs from different sections (Abstract, Claims, Description)" & vbCrLf
+    prompt = prompt & "- If you cannot find 4-5 relevant paragraphs, provide what you can find" & vbCrLf & vbCrLf
+
+    prompt = prompt & "EXAMPLE FORMAT (for claim element 'controlling a predetermined imaging range of a camera depending on the identified type of the detected event'):" & vbCrLf
+    prompt = prompt & "Disclosed Completely" & vbCrLf & vbCrLf
+    prompt = prompt & "Comment: The reference describes dynamic adjustments in the transmission of snapshots or images captured by the camera unit, which are configured based on the predefined event settings established by the customer." & vbCrLf & vbCrLf
+    prompt = prompt & "The **type of transmission that a camera unit provides over the network upon detecting predefined events may also be individually, remotely configured. For example, for certain predefined events, a camera unit 50 may be individually, remotely configured by a customer Workstation 30 to transmit a relatively high resolution picture (e.g., by increasing the pixel coding depth for the frame) over the network, a snapshot.** The camera unit may also increase the pixel coding depth. For other **predefined events a camera unit may be individually, remotely configured to transmit a length of video and/ or audio bounded by the duration of the event, an event clip**." & vbCrLf
+    prompt = prompt & "~Description" & vbCrLf & vbCrLf
+    prompt = prompt & "Also as discussed above, the camera units 400 are individually, remotely configurable via the customer work stations 30 and the administrator work stations 20 to detect one or more of the above events, and **to change various characteristics of the transmitted audio and video information based on detecting the events. That is, based on the type of event detected, the camera units can autonomously change one or more of the following variables: the bit rate, pixel coding depth (i.e., the number of bits utilized to code a pixel), frame rate, image size (video only), and compression algorithm. Based on certain predefined events, processor 439 of the camera units may also automatically control a pan/tilt/zoom (PTZ) control of the camera unit**." & vbCrLf
+    prompt = prompt & "~Description" & vbCrLf & vbCrLf
+    prompt = prompt & "NOTICE: These are EXACT paragraphs copied from the reference patent with **bold** added to relevant phrases." & vbCrLf & vbCrLf
+    prompt = prompt & "STRICT REQUIREMENTS:" & vbCrLf
+    prompt = prompt & "1. COPY EXACT TEXT from the reference patent - NO modifications, NO interpretations" & vbCrLf
+    prompt = prompt & "2. In each copied paragraph, add **bold** around phrases related to the claim element" & vbCrLf
+    prompt = prompt & "3. Bold ENTIRE SENTENCES and LONG PHRASES from the original patent text" & vbCrLf
+    prompt = prompt & "4. Use ~ before indexing (~Abstract, ~Claim 6, ~Description)" & vbCrLf
+    prompt = prompt & "5. Only include paragraphs that have text you can make bold" & vbCrLf
+    prompt = prompt & "6. Do NOT write any explanatory text - ONLY exact patent text with bold formatting" & vbCrLf & vbCrLf
+
+    prompt = prompt & "Now provide your response with EXACT PATENT TEXT ONLY (with bold formatting for relevant phrases)."
+
+    BuildAnalysisPrompt = prompt
+End Function
+
+' ===================================================================
+' CALL GOOGLE AI API (GEMINI)
+' ===================================================================
+Function CallGoogleAI(prompt As String) As String
+    'On Error GoTo ErrorHandler
+
+    
+Dim apiKey As String
+
+apiKey = "AIza.........Your API KEY"
+   
+
+   Debug.Print "API calls"
+    
+    Dim http As Object
+    Set http = CreateObject("MSXML2.XMLHTTP")
+    
+    ' Prepare the API URL
+    Dim apiUrl As String
+    'apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=" & apiKey
+    apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" & apiKey
+    ' Prepare the request body
+    Dim requestBody As String
+    requestBody = BuildGeminiRequestBody(prompt)
+    ' Debug.Print requestBody
+    ' Make the API call
+    http.Open "POST", apiUrl, False
+    http.setRequestHeader "Content-Type", "application/json"
+    http.send requestBody
+    
+    If http.Status = 200 Then
+        Dim response As String
+        response = http.responseText
+
+        Debug.Print "=== GOOGLE AI RAW RESPONSE ==="
+        Debug.Print "Response status: " & http.Status
+        Debug.Print "Response : "; response
+        
+        ' Parse the response to extract the generated text
+        Dim generatedText As String
+        generatedText = ParseGeminiResponse(response)
+
+        If Len(generatedText) = 0 Then
+            MsgBox "Google AI API returned empty response." & vbCrLf & vbCrLf & _
+                   "This could be due to:" & vbCrLf & _
+                   "• Content filtering by AI safety systems" & vbCrLf & _
+                   "• Invalid API response format" & vbCrLf & _
+                   "• API processing error" & vbCrLf & vbCrLf & _
+                   "Please try again or check your API key.", _
+                   vbCritical, "Google AI API Error"
+        End If
+
+        CallGoogleAI = generatedText
+    Else
+        Debug.Print "Response Text: "; http.responseText
+    End If
+    
+    Exit Function
+    
+ErrorHandler:
+    CallGoogleAI = ""
+End Function
+
+' ===================================================================
+' BUILD GEMINI API REQUEST BODY
+' ===================================================================
+Function BuildGeminiRequestBody(prompt As String) As String
+    Dim escapedPrompt As String
+    escapedPrompt = EscapeJSONString(prompt)
+    
+    Dim requestBody As String
+    Dim bodyPart1 As String
+    Dim bodyPart2 As String
+    Dim bodyPart3 As String
+    
+    ' Build request body in parts
+    bodyPart1 = "{"
+    bodyPart1 = bodyPart1 & """contents"": [{"
+    bodyPart1 = bodyPart1 & """parts"": [{"
+    bodyPart1 = bodyPart1 & """text"": """ & escapedPrompt & """"
+    bodyPart1 = bodyPart1 & "}]"
+    bodyPart1 = bodyPart1 & "}],"
+    
+    bodyPart2 = """generationConfig"": {"
+    bodyPart2 = bodyPart2 & """temperature"": 0.4,"
+    bodyPart2 = bodyPart2 & """topK"": 40,"
+    bodyPart2 = bodyPart2 & """topP"": 0.95,"
+    bodyPart2 = bodyPart2 & """maxOutputTokens"": 8192"
+    bodyPart2 = bodyPart2 & "}"
+    bodyPart2 = bodyPart2 & "}"
+    
+    
+    
+    ' Combine all parts
+    requestBody = bodyPart1 & bodyPart2
+    
+    BuildGeminiRequestBody = requestBody
+End Function
+
+' ===================================================================
+' PARSE GEMINI API RESPONSE
+' ===================================================================
+Function ParseGeminiResponse(jsonResponse As String) As String
+    On Error GoTo ErrorHandler
+
+    Debug.Print "=== PARSING GEMINI RESPONSE ==="
+    Debug.Print "Response length: " & Len(jsonResponse)
+    Debug.Print "Full response: " & jsonResponse
+
+    ' Use the simple extraction method
+    Dim result As String
+    result = ExtractTextFromGeminiJSON(jsonResponse)
+
+    If Len(result) > 0 Then
+        Debug.Print "=== PARSING SUCCESSFUL ==="
+        ParseGeminiResponse = result
+    Else
+        Debug.Print "=== PARSING FAILED ==="
+        ParseGeminiResponse = ""
+    End If
+
+    Exit Function
+
+ErrorHandler:
+    Debug.Print "Error in ParseGeminiResponse: " & Err.description
+    ParseGeminiResponse = ""
+End Function
+
+' ===================================================================
+' UTILITY FUNCTIONS
+' ===================================================================
+Function EscapeJSONString(inputString As String) As String
+    Dim result As String
+    result = inputString
+    
+    ' Escape backslashes first
+    result = Replace(result, "\", "\\")
+    
+    ' Escape quotes
+    result = Replace(result, """", "\""")
+    
+    ' Escape newlines and other control characters
+    result = Replace(result, vbCrLf, "\n")
+    result = Replace(result, vbCr, "\n")
+    result = Replace(result, vbLf, "\n")
+    result = Replace(result, vbTab, "\t")
+    
+    EscapeJSONString = result
+End Function
+
+Function UnescapeJSONString(inputString As String) As String
+    Dim result As String
+    result = inputString
+    
+    ' Unescape in reverse order
+    result = Replace(result, "\t", vbTab)
+    result = Replace(result, "\n", vbCrLf)
+    result = Replace(result, "\""", """")
+    result = Replace(result, "\\", "\")
+    
+    UnescapeJSONString = result
+End Function
+
+' ===================================================================
+' SIMPLE GEMINI JSON TEXT EXTRACTION
+' ===================================================================
+Function ExtractTextFromGeminiJSON(jsonResponse As String) As String
+    On Error Resume Next
+
+    Debug.Print "Using simple extraction method"
+
+    ' Look for the pattern: "text": "content"
+    Dim textPos As Long
+    textPos = InStr(jsonResponse, """text"":")
+
+    If textPos > 0 Then
+        ' Find the opening quote after "text":
+        Dim quoteStart As Long
+        quoteStart = InStr(textPos + 7, jsonResponse, """")
+
+        If quoteStart > 0 Then
+            quoteStart = quoteStart + 1 ' Move past the opening quote
+
+            ' Find the closing quote
+            Dim quoteEnd As Long
+            quoteEnd = quoteStart
+
+            Do While quoteEnd <= Len(jsonResponse)
+                If Mid(jsonResponse, quoteEnd, 1) = """" Then
+                    ' Check if it's escaped
+                    If quoteEnd = 1 Or Mid(jsonResponse, quoteEnd - 1, 1) <> "\" Then
+                        Exit Do
+                    End If
+                End If
+                quoteEnd = quoteEnd + 1
+            Loop
+
+            If quoteEnd > quoteStart Then
+                Dim extractedText As String
+                extractedText = Mid(jsonResponse, quoteStart, quoteEnd - quoteStart)
+
+                ' Clean up escape sequences
+                extractedText = Replace(extractedText, "\""", """")
+                extractedText = Replace(extractedText, "\\", "\")
+                extractedText = Replace(extractedText, "\n", vbCrLf)
+                extractedText = Replace(extractedText, "\r", "")
+                extractedText = Replace(extractedText, "\t", vbTab)
+
+                Debug.Print "Simple extraction successful, length: " & Len(extractedText)
+                ExtractTextFromGeminiJSON = extractedText
+            End If
+        End If
+    End If
+
+    If Len(ExtractTextFromGeminiJSON) = 0 Then
+        Debug.Print "Simple extraction failed"
+    End If
+End Function
+Function AnalyzePatentRelationshipWithChunking(claimElement As String, claimContext As String, referencePatentData As String) As String
+    On Error GoTo ErrorHandler
+
+    Debug.Print "=== CHUNKING METHOD START ==="
+
+    ' Split reference patent data into manageable chunks
+    Dim chunks() As String
+    chunks = SplitPatentDataIntoChunks(referencePatentData)
+
+    Dim chunkResults() As String
+    ReDim chunkResults(UBound(chunks))
+
+    Dim i As Integer
+    For i = 0 To UBound(chunks)
+        Debug.Print "Processing chunk " & (i + 1) & " of " & (UBound(chunks) + 1)
+        Debug.Print "Chunk " & (i + 1) & " length: " & Len(chunks(i))
+
+        ' Analyze each chunk separately
+        Dim chunkPrompt As String
+        chunkPrompt = BuildChunkAnalysisPrompt(claimElement, claimContext, chunks(i), i + 1, UBound(chunks) + 1)
+
+        Dim chunkResponse As String
+        chunkResponse = CallGoogleAI(chunkPrompt)
+
+        chunkResults(i) = chunkResponse
+        Debug.Print "Chunk " & (i + 1) & " analysis completed"
+    Next i
+
+    ' Combine all chunk results into final analysis
+    Debug.Print "Combining chunk results..."
+    Dim finalResult As String
+    finalResult = CombineChunkResults(claimElement, chunkResults)
+
+    AnalyzePatentRelationshipWithChunking = finalResult
+    Debug.Print "=== CHUNKING METHOD END ==="
+    Exit Function
+
+ErrorHandler:
+    Debug.Print "ERROR in AnalyzePatentRelationshipWithChunking: " & Err.description
+    AnalyzePatentRelationshipWithChunking = ""
+End Function
+
+' ===================================================================
+' SPLIT PATENT DATA INTO MANAGEABLE CHUNKS
+' ===================================================================
+Function SplitPatentDataIntoChunks(patentData As String) As String()
+    On Error GoTo ErrorHandler
+
+    Dim chunks() As String
+    Dim chunkSize As Long
+    chunkSize = 200000 ' 200K characters per chunk (conservative)
+
+    Dim totalLength As Long
+    totalLength = Len(patentData)
+
+    Dim numChunks As Integer
+    numChunks = Int((totalLength - 1) / chunkSize) + 1
+
+    ReDim chunks(numChunks - 1)
+
+    Debug.Print "Splitting " & totalLength & " characters into " & numChunks & " chunks"
+
+    Dim i As Integer
+    For i = 0 To numChunks - 1
+        Dim startPos As Long
+        Dim endPos As Long
+
+        startPos = i * chunkSize + 1
+        endPos = IIf((i + 1) * chunkSize > totalLength, totalLength, (i + 1) * chunkSize)
+
+        ' Try to break at sentence boundaries to maintain context
+        If endPos < totalLength Then
+            Dim breakPos As Long
+            breakPos = FindSentenceBreak(patentData, endPos)
+            If breakPos > startPos Then
+                endPos = breakPos
+            End If
+        End If
+
+        chunks(i) = Mid(patentData, startPos, endPos - startPos + 1)
+        Debug.Print "Chunk " & (i + 1) & ": " & startPos & " to " & endPos & " (" & Len(chunks(i)) & " chars)"
+    Next i
+
+    SplitPatentDataIntoChunks = chunks
+    Exit Function
+
+ErrorHandler:
+    Debug.Print "ERROR in SplitPatentDataIntoChunks: " & Err.description
+    ReDim chunks(0)
+    chunks(0) = Left(patentData, 200000) ' Fallback to first 200K chars
+    SplitPatentDataIntoChunks = chunks
+End Function
+
+' ===================================================================
+' FIND SENTENCE BREAK NEAR POSITION
+' ===================================================================
+Function FindSentenceBreak(text As String, nearPos As Long) As Long
+    On Error Resume Next
+
+    ' Look for sentence endings within 1000 characters before the position
+    Dim searchStart As Long
+    searchStart = IIf(nearPos - 1000 > 1, nearPos - 1000, 1)
+
+    Dim i As Long
+    For i = nearPos To searchStart Step -1
+        Dim char As String
+        char = Mid(text, i, 1)
+
+        ' Look for sentence endings
+        If char = "." Or char = "!" Or char = "?" Then
+            ' Make sure it's followed by space or newline
+            If i < Len(text) Then
+                Dim nextChar As String
+                nextChar = Mid(text, i + 1, 1)
+                If nextChar = " " Or nextChar = vbCrLf Or nextChar = vbLf Then
+                    FindSentenceBreak = i
+                    Exit Function
+                End If
+            End If
+        End If
+    Next i
+
+    ' If no sentence break found, return original position
+    FindSentenceBreak = nearPos
+End Function
+
+' ===================================================================
+' BUILD CHUNK ANALYSIS PROMPT
+' ===================================================================
+Function BuildChunkAnalysisPrompt(claimElement As String, claimContext As String, chunkData As String, chunkNum As Integer, totalChunks As Integer) As String
+    Dim prompt As String
+
+    prompt = "You are a patent analysis expert. This is chunk " & chunkNum & " of " & totalChunks & " from a reference patent."
+    prompt = prompt & " Analyze this chunk for relevance to the claim element and extract relevant passages in the EXACT format specified."
+    prompt = prompt & vbCrLf & vbCrLf
+
+    prompt = prompt & "CLAIM ELEMENT:" & vbCrLf
+    prompt = prompt & claimElement & vbCrLf & vbCrLf
+
+    prompt = prompt & "CLAIM ELEMENT CONTEXT:" & vbCrLf
+    prompt = prompt & claimContext & vbCrLf & vbCrLf
+
+    prompt = prompt & "REFERENCE PATENT CHUNK " & chunkNum & ":" & vbCrLf
+    prompt = prompt & chunkData & vbCrLf & vbCrLf
+
+    prompt = prompt & "REQUIRED FORMAT:" & vbCrLf
+    prompt = prompt & "If relevant content found, provide EXACT paragraphs from the patent text with bold formatting:" & vbCrLf & vbCrLf
+
+    prompt = prompt & "[EXACT paragraph copied from patent with **bold text** around phrases related to claim element]" & vbCrLf
+    prompt = prompt & "~[Source: Abstract/Claim X/Description]" & vbCrLf & vbCrLf
+
+    prompt = prompt & "[Another EXACT paragraph from patent with **bold text** for relevant phrases]" & vbCrLf
+    prompt = prompt & "~[Source: Abstract/Claim X/Description]" & vbCrLf & vbCrLf
+
+    prompt = prompt & "MANDATORY REQUIREMENTS:" & vbCrLf
+    prompt = prompt & "- COPY EXACT TEXT from the patent chunk - NO paraphrasing or interpretation" & vbCrLf
+    prompt = prompt & "- In each copied paragraph, add **bold** around phrases related to the claim element" & vbCrLf
+    prompt = prompt & "- Use **bold text** for COMPLETE SENTENCES and LONG PHRASES from the original patent text" & vbCrLf
+    prompt = prompt & "- Bold text must be directly, indirectly, or inherently related to the claim element" & vbCrLf
+    prompt = prompt & "- Use ~ symbol before indexing (e.g., ~Abstract, ~Claim 6, ~Description)" & vbCrLf
+    prompt = prompt & "- If no relevant content with bold text possible, respond with: 'NO_RELEVANT_CONTENT'" & vbCrLf
+    prompt = prompt & "- Provide complete paragraphs copied exactly from the patent text" & vbCrLf
+    prompt = prompt & "- Do NOT write explanatory text - ONLY exact patent text with bold formatting"
+
+    BuildChunkAnalysisPrompt = prompt
+End Function
+
+' ===================================================================
+' COMBINE CHUNK RESULTS INTO FINAL ANALYSIS
+' ===================================================================
+Function CombineChunkResults(claimElement As String, chunkResults() As String) As String
+    On Error GoTo ErrorHandler
+
+    Debug.Print "Combining results from " & (UBound(chunkResults) + 1) & " chunks"
+
+    ' Collect all relevant passages in the correct format
+    Dim allPassages As String
+    Dim hasRelevantContent As Boolean
+    hasRelevantContent = False
+
+    Dim i As Integer
+    For i = 0 To UBound(chunkResults)
+        If Len(chunkResults(i)) > 0 Then
+            ' Check if this chunk has relevant content
+            If InStr(UCase(chunkResults(i)), "NO_RELEVANT_CONTENT") = 0 And Len(Trim(chunkResults(i))) > 10 Then
+                ' This chunk has relevant content - add it directly
+                allPassages = allPassages & Trim(chunkResults(i)) & vbCrLf & vbCrLf
+                hasRelevantContent = True
+                Debug.Print "Added content from chunk " & (i + 1)
+            Else
+                Debug.Print "Chunk " & (i + 1) & " has no relevant content"
+            End If
+        End If
+    Next i
+
+    ' Build final analysis in the exact format expected
+    Dim finalAnalysis As String
+
+    If hasRelevantContent Then
+        ' Determine disclosure level based on content quality
+        Dim disclosureLevel As String
+        If InStr(allPassages, "**") > 0 Then
+            disclosureLevel = "Disclosed completely"
+        Else
+            disclosureLevel = "Disclosed partially"
+        End If
+
+        finalAnalysis = disclosureLevel & vbCrLf & vbCrLf
+        finalAnalysis = finalAnalysis & "Comment:- The reference patent discloses the claim element through multiple sections of the patent document. "
+        finalAnalysis = finalAnalysis & "The comprehensive analysis reveals relevant technical disclosures that relate to the claimed functionality "
+        finalAnalysis = finalAnalysis & "either directly, indirectly, or inherently." & vbCrLf & vbCrLf
+
+        ' Add all the collected passages (already formatted with bold and indexing)
+        finalAnalysis = finalAnalysis & Trim(allPassages)
+    Else
+        finalAnalysis = "Disclosed partially" & vbCrLf & vbCrLf
+        finalAnalysis = finalAnalysis & "Comment:- After analyzing the complete reference patent document in multiple chunks, "
+        finalAnalysis = finalAnalysis & "the claim element is not sufficiently disclosed. While some related concepts may be present, "
+        finalAnalysis = finalAnalysis & "the specific claimed functionality is not found in the reference patent." & vbCrLf & vbCrLf
+        finalAnalysis = finalAnalysis & "No directly relevant passages found that support the claim element."
+    End If
+
+    CombineChunkResults = finalAnalysis
+    Debug.Print "Final combined analysis length: " & Len(finalAnalysis)
+    Exit Function
+
+ErrorHandler:
+    Debug.Print "ERROR in CombineChunkResults: " & Err.description
+    CombineChunkResults = "Error combining chunk results: " & Err.description
+End Function
+Sub BoldTextBetweenAsterisks()
+    Dim sel As Selection
+    Dim cellRange As Range
+    Dim startPos As Long
+    Dim endPos As Long
+    Dim searchRange As Range
+    Dim found As Boolean
+    
+    Set sel = Application.Selection
+    
+    ' Check if selection is inside a table cell
+    If sel.Information(wdWithInTable) = False Then
+        MsgBox "Please place the cursor inside a table cell.", vbExclamation
+        Exit Sub
+    End If
+    
+    ' Get the range of the current cell
+    Set cellRange = sel.Cells(1).Range
+    ' Exclude the end of cell marker
+    cellRange.End = cellRange.End - 1
+    
+    ' Initialize search range
+    Set searchRange = cellRange.Duplicate
+    
+    Do
+        found = False
+        ' Find the first occurrence of "**"
+        With searchRange.Find
+            .text = "**"
+            .Forward = True
+            .Wrap = wdFindStop
+            .MatchWildcards = False
+            If .Execute Then
+                startPos = searchRange.Start
+                ' Move start of searchRange past this found **
+                searchRange.Start = startPos + 2
+                
+                ' Find the next occurrence of "**" after the first
+                With searchRange.Find
+                    .text = "**"
+                    .Forward = True
+                    .Wrap = wdFindStop
+                    .MatchWildcards = False
+                    If .Execute Then
+                        endPos = searchRange.Start
+                        ' Bold the text between startPos+2 and endPos-1
+                        Dim boldRange As Range
+                        Set boldRange = cellRange.Document.Range(startPos + 2, endPos)
+                        boldRange.Bold = True
+                        
+                        ' Remove the trailing **
+                        cellRange.Document.Range(endPos, endPos + 2).Delete
+                        ' Remove the leading **
+                        cellRange.Document.Range(startPos, startPos + 2).Delete
+                        
+                        ' Reset searchRange to start after the bolded text
+                        searchRange.Start = startPos
+                        searchRange.End = cellRange.End
+                        
+                        found = True
+                    End If
+                End With
+            End If
+        End With
+    Loop While found
+End Sub
