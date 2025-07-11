@@ -17,6 +17,7 @@ subjectPatentNo = InputBox("Enter the Subject Patent No (e.g., US7619647B2):", _
     
 subjectPatentData = FetchAndInsertGooglePatentData(subjectPatentNo)
 referencePatentData = FetchAndInsertGooglePatentData(referencePatentNo)
+
 claimElement = Selection.text
 Debug.Print "data fached"
 Dim claimContext As String
@@ -24,7 +25,7 @@ claimContext = GenerateClaimContext(claimElement, subjectPatentData)
 MsgBox "claimContext successfully." & claimContext, vbInformation
 Dim analysisResult As String
 analysisResult = AnalyzePatentRelationship(claimElement, claimContext, referencePatentData)
-
+'analysisResult = referencePatentData
 If Selection.Information(wdWithInTable) Then
     Selection.MoveRight Unit:=wdCell, Count:=1
     Selection.TypeText (analysisResult)
@@ -70,13 +71,14 @@ Function FetchAndInsertGooglePatentData(patentNo As String)
     htmlText = http.responseText
 
     ' --- Custom parsing for each section ---
-    title = CleanHTML(ExtractBetween(htmlText, "<span itemprop=""title"">", "</span>"))
-    abstract = CleanHTML(ExtractBetween(htmlText, "<section itemprop=""abstract"" itemscope>", "</section>"))
-    claims = ExtractAndFormatClaimsPara(htmlText)
-    description = ExtractDescriptionWithParaNumbers(ExtractBetween(htmlText, "<section itemprop=""description"" itemscope>", "</section>"))
+    'title = CleanHTML(ExtractBetween(htmlText, "<span itemprop=""title"">", "</span>"))
+    'abstract = CleanHTML(ExtractBetween(htmlText, "<section itemprop=""abstract"" itemscope>", "</section>"))
+    'claims = ExtractAndFormatClaimsPara(htmlText)
+    'description = ExtractDescriptionWithParaNumbers(ExtractBetween(htmlText, "<section itemprop=""description"" itemscope>", "</section>"))
+    
 
-   FetchAndInsertGooglePatentData = title + abstract + claims + description
-   'Debug.Print FetchAndInsertGooglePatentData
+   'FetchAndInsertGooglePatentData = title + abstract + claims + description
+   FetchAndInsertGooglePatentData = ExtractEnglishContentFromHTML(htmlText)
    MsgBox "Patent data extracted and inserted successfully.", vbInformation
 End Function
 
@@ -315,6 +317,13 @@ Function BuildContextPrompt(claimElement As String, subjectPatentData As String)
     
     prompt = "You are a patent analysis expert. Based on the following patent data, "
     prompt = prompt & "provide a concise context for the specific claim element."
+    prompt = prompt & "Please provide a context about:" & vbCrLf
+    prompt = prompt & "ordinary and customary meaning of the claim element as understood by a person of ordinary skill in the art (POSITA)" & vbCrLf
+    prompt = prompt & "If the term is common in the technical field, give a brief definition reflecting general industry usage" & vbCrLf
+    prompt = prompt & "Extract and summarize any clarifying information from the subject patent’s specification (description) that provides context, explanation, or examples relating to the claim element" & vbCrLf
+    prompt = prompt & "Include direct citations (section, paragraph) where possible." & vbCrLf
+    prompt = prompt & "Identify if the subject patent expressly assigns a specific meaning or definition to the claim element or any of its terms" & vbCrLf
+    prompt = prompt & "If a special definition is present, clearly state direct citations (section, paragraph)" & vbCrLf
     prompt = prompt & vbCrLf & vbCrLf
     
     prompt = prompt & "CLAIM ELEMENT TO ANALYZE:" & vbCrLf
@@ -323,12 +332,12 @@ Function BuildContextPrompt(claimElement As String, subjectPatentData As String)
     prompt = prompt & "SUBJECT PATENT DATA:" & vbCrLf
     prompt = prompt & subjectPatentData & vbCrLf & vbCrLf
     
-    prompt = prompt & "Please provide a context that explains:" & vbCrLf
-    prompt = prompt & "1. What this claim element represents in the invention" & vbCrLf
-    prompt = prompt & "2. Its technical significance" & vbCrLf
-    prompt = prompt & "3. How it relates to the overall patent" & vbCrLf & vbCrLf
+    prompt = prompt & "Only include information directly derived from the subject patent or widely accepted in the relevant technical field" & vbCrLf
+    prompt = prompt & "Avoid assumptions or extrinsic evidence" & vbCrLf
+    prompt = prompt & "the broad interpation possible according to the patent data" & vbCrLf
+    prompt = prompt & "How it relates to the overall patent" & vbCrLf & vbCrLf
     
-    prompt = prompt & "Keep the response to focus on technical understanding."
+    prompt = prompt & "Keep the response to focus on technical understanding. and in one para and minimum text if possible "
     
     BuildContextPrompt = prompt
 End Function
@@ -366,14 +375,14 @@ Function BuildAnalysisPrompt(claimElement As String, claimContext As String, ref
     
 
     prompt = prompt & "Third Section: Provide ONLY exact text from the reference patent (NO paraphrasing, NO interpretation):" & vbCrLf
-    prompt = prompt & "- COPY EXACT PARAGRAPHS word-for-word from the reference patent text provided above" & vbCrLf
+    prompt = prompt & "- COPY EXACT PARAGRAPHS word-for-word from the reference patent text provided above " & vbCrLf
     prompt = prompt & "- DO NOT write your own text or interpretations" & vbCrLf
     prompt = prompt & "- DO NOT paraphrase or modify the patent text" & vbCrLf
-    prompt = prompt & "- CRITICAL: In each copied paragraph, use **bold text** around phrases directly related to the claim element" & vbCrLf
+    prompt = prompt & "- CRITICAL: In each copied paragraph, use **bold text** around phrases directly related to the claim element(Ignore Non-english Text)" & vbCrLf
     prompt = prompt & "- Bold ENTIRE SENTENCES or LONG PHRASES from the original patent text" & vbCrLf
     prompt = prompt & "- After EACH paragraph, add indexing with ~ symbol: '~Abstract', '~Claim X', '~Description'" & vbCrLf
-    prompt = prompt & "- Provide 4-5 exact paragraphs from different sections (Abstract, Claims, Description)" & vbCrLf
-    prompt = prompt & "- If you cannot find 4-5 relevant paragraphs, provide what you can find" & vbCrLf & vbCrLf
+    prompt = prompt & "- Provide 4-5 exact paragraphs from different sections (Abstract, Claims, Description)(Ignore Non-english Text)" & vbCrLf
+    prompt = prompt & "- If you cannot find 4-5 relevant paragraphs, provide what you can find " & vbCrLf & vbCrLf
 
     prompt = prompt & "EXAMPLE FORMAT (for claim element 'controlling a predetermined imaging range of a camera depending on the identified type of the detected event'):" & vbCrLf
     prompt = prompt & "Disclosed Completely" & vbCrLf & vbCrLf
@@ -405,7 +414,7 @@ Function CallGoogleAI(prompt As String) As String
     
 Dim apiKey As String
 
-apiKey = "AIza.........Your API KEY"
+apiKey = "AIzaSyDyUEBQZb-P2bZTboVlJWo6lEZcuQ-swCA"
    
 
    Debug.Print "API calls"
@@ -910,3 +919,161 @@ Sub BoldTextBetweenAsterisks()
         End With
     Loop While found
 End Sub
+Function ExtractEnglishContentFromHTML(rawHtml As String) As String
+    Dim titleText As String
+    Dim abstractText As String
+    Dim claimText As String
+    Dim descriptionText As String
+    Dim result As String
+    
+    ' Extract sections by itemprop or tags
+    titleText = ExtractSection(rawHtml, "title")
+    abstractText = ExtractSection(rawHtml, "abstract")
+    claimText = ExtractSection(rawHtml, "claims")
+    descriptionText = ExtractSection(rawHtml, "description")
+    
+    ' Clean HTML tags and decode entities
+    titleText = CleanHtmlAndDecode(titleText)
+    abstractText = CleanHtmlAndDecode(abstractText)
+    claimText = CleanHtmlAndDecode(claimText)
+    descriptionText = CleanHtmlAndDecode(descriptionText)
+    
+    ' Filter to keep only English characters and common punctuation
+    titleText = KeepEnglishText(titleText)
+    abstractText = KeepEnglishText(abstractText)
+    claimText = KeepEnglishText(claimText)
+    descriptionText = KeepEnglishText(descriptionText)
+    
+    ' Compose result
+    result = "Title:" & vbCrLf & titleText & vbCrLf & vbCrLf
+    result = result & "Abstract:" & vbCrLf & abstractText & vbCrLf & vbCrLf
+    result = result & "Claims:" & vbCrLf & claimText & vbCrLf & vbCrLf
+    result = result & "Description:" & vbCrLf & descriptionText
+    
+    ExtractEnglishContentFromHTML = result
+End Function
+
+Private Function ExtractSection(html As String, sectionName As String) As String
+    ' Extract content inside <section itemprop="sectionName" ...> ... </section>
+    Dim startTag As String
+    Dim endTag As String
+    Dim startPos As Long
+    Dim endPos As Long
+    Dim sectionContent As String
+    
+    startTag = "<section itemprop=""" & sectionName & """"
+    endTag = "</section>"
+    
+    startPos = InStr(1, html, startTag, vbTextCompare)
+    If startPos = 0 Then
+        ExtractSection = ""
+        Exit Function
+    End If
+    
+    ' Find the closing '>' of the start tag
+    startPos = InStr(startPos, html, ">") + 1
+    If startPos = 0 Then
+        ExtractSection = ""
+        Exit Function
+    End If
+    
+    endPos = InStr(startPos, html, endTag, vbTextCompare)
+    If endPos = 0 Then
+        ExtractSection = ""
+        Exit Function
+    End If
+    
+    sectionContent = Mid(html, startPos, endPos - startPos)
+    ExtractSection = sectionContent
+End Function
+
+Private Function CleanHtmlAndDecode(text As String) As String
+    Dim temp As String
+    Dim tagOpen As Long, tagClose As Long
+    
+    temp = text
+    
+    ' Replace <p>, <br> tags with line breaks
+    temp = Replace(temp, "<p>", vbCrLf, , , vbTextCompare)
+    temp = Replace(temp, "</p>", vbCrLf, , , vbTextCompare)
+    temp = Replace(temp, "<br>", vbCrLf, , , vbTextCompare)
+    temp = Replace(temp, "<br/>", vbCrLf, , , vbTextCompare)
+    temp = Replace(temp, "<br />", vbCrLf, , , vbTextCompare)
+    
+    ' Remove all other HTML tags
+    Do
+        tagOpen = InStr(temp, "<")
+        If tagOpen = 0 Then Exit Do
+        tagClose = InStr(tagOpen, temp, ">")
+        If tagClose = 0 Then Exit Do
+        temp = Left(temp, tagOpen - 1) & Mid(temp, tagClose + 1)
+    Loop
+    
+    ' Decode common HTML entities
+    temp = Replace(temp, "&nbsp;", " ")
+    temp = Replace(temp, "&amp;", "&")
+    temp = Replace(temp, "<", "<")
+    temp = Replace(temp, ">", ">")
+    
+    ' Normalize whitespace
+    temp = Replace(temp, vbTab, " ")
+    temp = Replace(temp, vbCr, "")
+    temp = Replace(temp, vbLf, vbCrLf)
+    temp = Replace(temp, vbCrLf & vbCrLf, vbCrLf)
+    
+    CleanHtmlAndDecode = Trim(temp)
+End Function
+
+Private Function KeepEnglishText(text As String) As String
+    Dim i As Long
+    Dim ch As String
+    Dim result As String
+    
+    result = ""
+    For i = 1 To Len(text)
+        ch = Mid(text, i, 1)
+        If IsEnglishChar(ch) Or IsCommonPunctuation(ch) Or ch = vbCr Or ch = vbLf Or ch = " " Then
+            result = result & ch
+        Else
+            ' Replace non-English characters with space to preserve word separation
+            result = result & " "
+        End If
+    Next i
+    
+    ' Replace multiple spaces/newlines with single space/newline
+    result = ReplaceMultipleSpacesAndNewlines(result)
+    
+    KeepEnglishText = Trim(result)
+End Function
+
+Private Function IsEnglishChar(ch As String) As Boolean
+    Dim code As Integer
+    code = AscW(ch)
+    IsEnglishChar = ((code >= 65 And code <= 90) Or (code >= 97 And code <= 122) Or (code >= 48 And code <= 57))
+End Function
+
+Private Function IsCommonPunctuation(ch As String) As Boolean
+    Select Case ch
+        Case ".", ",", ";", ":", "!", "?", "'", """", "(", ")", "[", "]", "{", "}", "-", "_", "/", "\", "@", "#", "$", "%", "&", "*", "+", "=", "<", ">", "^", "~", "`", "|"
+            IsCommonPunctuation = True
+        Case Else
+            IsCommonPunctuation = False
+    End Select
+End Function
+
+Private Function ReplaceMultipleSpacesAndNewlines(text As String) As String
+    Dim temp As String
+    temp = text
+    
+    ' Replace multiple spaces with single space
+    Do While InStr(temp, "  ") > 0
+        temp = Replace(temp, "  ", " ")
+    Loop
+    
+    ' Replace multiple newlines with single newline
+    Do While InStr(temp, vbCrLf & vbCrLf) > 0
+        temp = Replace(temp, vbCrLf & vbCrLf, vbCrLf)
+    Loop
+    
+    ReplaceMultipleSpacesAndNewlines = temp
+End Function
